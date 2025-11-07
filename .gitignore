@@ -1,0 +1,22 @@
+﻿# OS
+.DS_Store
+Thumbs.db
+
+# Python (for API later)
+.venv/
+__pycache__/
+*.pyc
+
+# Node (if you add a UI later)
+node_modules/
+dist/
+build/
+
+# Env & secrets
+.env
+*.secret
+*.key
+
+# Dumps/backups
+*.dump
+*.bak
