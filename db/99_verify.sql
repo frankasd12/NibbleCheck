@@ -1,4 +1,4 @@
-﻿-- db/99_verify.sql
+-- db/99_verify.sql
 \set ON_ERROR_STOP 1
 
 -- 1) no dangling rules.food_id

@@ -1,4 +1,4 @@
-﻿-- db/01_types.sql
+-- db/01_types.sql
 
 -- Create enum food_status if it doesn't exist
 DO $$

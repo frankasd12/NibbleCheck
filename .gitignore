@@ -20,3 +20,11 @@ build/
 # Dumps/backups
 *.dump
 *.bak
+
+
+
+.venv/
+__pycache__/
+.pytest_cache/
+.coverage
+.env

@@ -1,4 +1,4 @@
-﻿-- Case-insensitive uniqueness
+-- Case-insensitive uniqueness
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_food_name_ci ON foods (LOWER(canonical_name));
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_syn_name_ci  ON synonyms (LOWER(name));
 

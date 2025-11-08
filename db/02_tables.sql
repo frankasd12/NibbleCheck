@@ -1,4 +1,4 @@
-﻿-- foods (unchanged)
+-- foods (unchanged)
 CREATE TABLE IF NOT EXISTS foods (
   id             SERIAL PRIMARY KEY,
   canonical_name TEXT NOT NULL,
