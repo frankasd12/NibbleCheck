@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict 9EVIYnkYaVT4lUw8ci1B9GDIhXwqdfQzorlmfECyGTp4xl52YfqtTJhWaZxfdb0
+
 
 -- Dumped from database version 18.0
 -- Dumped by pg_dump version 18.0
@@ -18,6 +18,13 @@ SET check_function_bodies = false;
 SET xmloption = content;
 SET client_min_messages = warning;
 SET row_security = off;
+
+SET client_encoding = 'UTF8';
+SET standard_conforming_strings = on;
+SELECT pg_catalog.set_config('search_path', '', false);
+SET row_security = off;
+
+BEGIN;
 
 --
 -- Data for Name: foods; Type: TABLE DATA; Schema: public; Owner: app
@@ -680,26 +687,12 @@ INSERT INTO public.synonyms VALUES (313, 149, 'poppy seedses', '2025-11-07 18:21
 -- Name: foods_id_seq; Type: SEQUENCE SET; Schema: public; Owner: app
 --
 
-SELECT pg_catalog.setval('public.foods_id_seq', 149, true);
+
+SELECT setval('public.foods_id_seq',    COALESCE((SELECT MAX(id) FROM public.foods),    1), true);
+SELECT setval('public.rules_id_seq',    COALESCE((SELECT MAX(id) FROM public.rules),    1), true);
+SELECT setval('public.synonyms_id_seq', COALESCE((SELECT MAX(id) FROM public.synonyms), 1), true);
+
+COMMIT;
 
 
---
--- Name: rules_id_seq; Type: SEQUENCE SET; Schema: public; Owner: app
---
-
-SELECT pg_catalog.setval('public.rules_id_seq', 187, true);
-
-
---
--- Name: synonyms_id_seq; Type: SEQUENCE SET; Schema: public; Owner: app
---
-
-SELECT pg_catalog.setval('public.synonyms_id_seq', 313, true);
-
-
---
--- PostgreSQL database dump complete
---
-
-\unrestrict 9EVIYnkYaVT4lUw8ci1B9GDIhXwqdfQzorlmfECyGTp4xl52YfqtTJhWaZxfdb0
 
