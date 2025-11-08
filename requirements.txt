@@ -1,4 +1,6 @@
-fastapi
-uvicorn[standard]
-psycopg[binary]
-python-dotenv
+fastapi>=0.115
+uvicorn[standard]>=0.30
+psycopg[binary]>=3.2
+python-dotenv>=1.0
+httpx>=0.27,<0.28
+
