@@ -9,6 +9,7 @@ BEGIN
   INTO c
   FROM rules r LEFT JOIN foods f ON f.id = r.food_id
   WHERE f.id IS NULL;
+
   IF c > 0 THEN
     RAISE EXCEPTION 'Verify failed: % dangling rules.food_id', c;
   END IF;
@@ -26,12 +27,13 @@ BEGIN
     GROUP BY lower(name)
     HAVING COUNT(DISTINCT food_id) > 1
   ) t;
+
   IF c > 0 THEN
     RAISE EXCEPTION 'Verify failed: % ambiguous synonym(s)', c;
   END IF;
 END$$;
 
--- 3) CAUTION/UNSAFE must have a source (adjust if sources stored elsewhere)
+-- 3) CAUTION/UNSAFE must have at least one non-blank source (foods.sources is TEXT[])
 DO $$
 DECLARE c int;
 BEGIN
@@ -39,7 +41,17 @@ BEGIN
   INTO c
   FROM foods
   WHERE default_status IN ('CAUTION','UNSAFE')
-    AND (sources IS NULL OR sources = '' OR btrim(sources) = '');
+    AND (
+      -- sources is NULL or empty
+      cardinality(coalesce(sources, ARRAY[]::text[])) = 0
+      -- or all elements are blank after trimming
+      OR NOT EXISTS (
+        SELECT 1
+        FROM unnest(coalesce(sources, ARRAY[]::text[])) AS s(val)
+        WHERE btrim(val) <> ''
+      )
+    );
+
   IF c > 0 THEN
     RAISE EXCEPTION 'Verify failed: % CAUTION/UNSAFE entries missing sources', c;
   END IF;
@@ -47,6 +59,6 @@ END$$;
 
 -- 4) basic counts (visible in CI logs)
 SELECT
-  (SELECT COUNT(*) FROM foods)   AS foods,
+  (SELECT COUNT(*) FROM foods)    AS foods,
   (SELECT COUNT(*) FROM synonyms) AS synonyms,
   (SELECT COUNT(*) FROM rules)    AS rules;
