@@ -1,32 +1,69 @@
-﻿name: DB CI
+﻿name: CI
 
 on:
   push:
   pull_request:
 
 jobs:
-  pg-apply:
+  build:
     runs-on: ubuntu-latest
+
     services:
       postgres:
         image: postgres:16
         env:
+          POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: dogfood
-        ports: ['5432:5432']
+        ports: ["5432:5432"]
         options: >-
           --health-cmd="pg_isready -U postgres -d dogfood"
           --health-interval=5s --health-timeout=5s --health-retries=20
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/dogfood
+
     steps:
       - uses: actions/checkout@v4
-      - name: Apply SQL
+
+      - name: Install psql client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Apply SQL (migrations, seeds, functions, constraints, verify)
         run: |
-          sudo apt-get update && sudo apt-get install -y postgresql-client
-          psql "postgresql://postgres:postgres@localhost:5432/dogfood" -f db/00_extensions.sql
-          psql "postgresql://postgres:postgres@localhost:5432/dogfood" -f db/01_types.sql
-          psql "postgresql://postgres:postgres@localhost:5432/dogfood" -f db/02_tables.sql
-          psql "postgresql://postgres:postgres@localhost:5432/dogfood" -f db/03_indexes.sql
-          if [ -s db/04_seeds_core.sql ]; then
-            psql "postgresql://postgres:postgres@localhost:5432/dogfood" -f db/04_seeds_core.sql
-          fi
-          psql "postgresql://postgres:postgres@localhost:5432/dogfood" -f db/99_verify.sql
+          set -e
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/00_extensions.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/01_types.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/02_tables.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/03_indexes.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/04_seeds_core.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/05_functions.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/06_constraints.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/99_verify.sql
+
+      - name: Show counts (just for logs)
+        run: |
+          psql "$DATABASE_URL" -c "SELECT count(*) AS foods FROM foods;"
+          psql "$DATABASE_URL" -c "SELECT count(*) AS synonyms FROM synonyms;"
+          psql "$DATABASE_URL" -c "SELECT count(*) AS rules FROM rules;"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install API deps
+        run: pip install -r requirements.txt
+
+      - name: API smoke via TestClient
+        run: |
+          python - <<'PY'
+          import os
+          os.environ["DATABASE_URL"]=os.getenv("DATABASE_URL","postgresql://postgres:postgres@localhost:5432/dogfood")
+          from api.main import app
+          from fastapi.testclient import TestClient
+          c = TestClient(app)
+          r = c.get("/health"); assert r.status_code==200 and r.json().get("ok")
+          r = c.get("/search", params={"q":"grape","limit":5}); assert r.status_code==200
+          print("API OK. Search count:", r.json().get("count"))
+          PY

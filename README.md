@@ -75,3 +75,32 @@ It combines computer vision to recognize foods with a curated knowledge base (ru
 - **App:** React/React Native (or Flutter) for a mobile-first UI  
 - **DevOps:** GitHub Actions CI, Docker (API/DB), environment-based config  
 - **Security/Privacy:** minimal data retention, no PII required, opt-in analytics
+
+### Endpoints
+
+- `GET /health` → `{ "ok": true }`
+- `GET /search?q=grape&limit=10` → fuzzy search over foods + synonyms
+- `GET /foods/{id}` → detail (notes, sources, synonyms, rules)
+- `POST /classify/resolve`
+  - **req**: `{"labels":[{"name":"grape","score":0.81},{"name":"raisin","score":0.42}]}`
+  - **res**:
+    ```json
+    {
+      "overall_status": "UNSAFE",
+      "candidates": [
+        {"food_id":1,"name":"grape","status":"UNSAFE","matched_from":"food","db_score":0.93,"model_label":"grape","model_score":0.81}
+      ]
+    }
+    ```
+- `POST /ingredients/resolve`
+  - **req**: `{"ingredients_text":"wheat flour, raisins, cinnamon, sugar"}`
+  - **res**:
+    ```json
+    {
+      "hits": [
+        {"token":"raisins","food_id":12,"name":"raisin","status":"UNSAFE","matched_from":"synonym","db_score":0.89},
+        {"token":"cinnamon","food_id":77,"name":"cinnamon","status":"CAUTION","matched_from":"food","db_score":0.72}
+      ],
+      "overall_status":"UNSAFE"
+    }
+    ```
