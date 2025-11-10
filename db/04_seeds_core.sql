@@ -40,6 +40,10 @@ BEGIN;
 --
 -- Data for Name: foods; Type: TABLE DATA; Schema: public; Owner: app
 --
+-- make reseeding safe
+TRUNCATE TABLE public.rules, public.synonyms, public.foods
+RESTART IDENTITY CASCADE;
+
 
 INSERT INTO public.foods VALUES (6, 'banana', 'fruit', 'SAFE', 'Small pieces okay; high sugarâ€”use as occasional treat.', '{akc.org}', '2025-11-07 18:11:25.412983-05', '2025-11-07 18:11:25.412983-05');
 INSERT INTO public.foods VALUES (7, 'blueberry', 'fruit', 'SAFE', 'Small handful okay; rich in fiberâ€”introduce slowly.', '{akc.org}', '2025-11-07 18:11:25.412983-05', '2025-11-07 18:11:25.412983-05');
@@ -699,9 +703,12 @@ INSERT INTO public.synonyms VALUES (313, 149, 'poppy seedses', '2025-11-07 18:21
 --
 
 
-SELECT setval('public.foods_id_seq',    COALESCE((SELECT MAX(id) FROM public.foods),    1), true);
-SELECT setval('public.rules_id_seq',    COALESCE((SELECT MAX(id) FROM public.rules),    1), true);
-SELECT setval('public.synonyms_id_seq', COALESCE((SELECT MAX(id) FROM public.synonyms), 1), true);
+SELECT setval(pg_get_serial_sequence('public.foods','id'),
+              COALESCE((SELECT MAX(id) FROM public.foods), 1), true);
+SELECT setval(pg_get_serial_sequence('public.rules','id'),
+              COALESCE((SELECT MAX(id) FROM public.rules), 1), true);
+SELECT setval(pg_get_serial_sequence('public.synonyms','id'),
+              COALESCE((SELECT MAX(id) FROM public.synonyms), 1), true);
 
 COMMIT;
 
