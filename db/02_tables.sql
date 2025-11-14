@@ -1,4 +1,15 @@
--- foods (unchanged)
+-- db/02_tables.sql
+-- Core tables for NibbleCheck
+
+-- =========================================================
+-- foods
+--  - canonical_name: canonical food name ("grape", "white rice")
+--  - group_name: category ("fruit", "protein", etc.)
+--  - default_status: SAFE / CAUTION / UNSAFE (food_status enum from 01_types.sql)
+--  - notes: human-readable guidance (portion, caveats)
+--  - sources: array of citation names / URLs
+--  - created_at / updated_at: timestamps
+-- =========================================================
 CREATE TABLE IF NOT EXISTS foods (
   id             SERIAL PRIMARY KEY,
   canonical_name TEXT NOT NULL,
@@ -10,7 +21,10 @@ CREATE TABLE IF NOT EXISTS foods (
   updated_at     TIMESTAMPTZ DEFAULT now()
 );
 
--- add timestamps to synonyms
+-- =========================================================
+-- synonyms
+--  - maps alternate labels / spellings to a food
+-- =========================================================
 CREATE TABLE IF NOT EXISTS synonyms (
   id         SERIAL PRIMARY KEY,
   food_id    INTEGER NOT NULL REFERENCES foods(id) ON DELETE CASCADE,
@@ -19,7 +33,11 @@ CREATE TABLE IF NOT EXISTS synonyms (
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
--- add timestamps to rules
+-- =========================================================
+-- rules
+--  - per-food safety rules that can override default_status
+--  - condition: JSONB to hold things like "tiny amount", "certain breeds", etc.
+-- =========================================================
 CREATE TABLE IF NOT EXISTS rules (
   id         SERIAL PRIMARY KEY,
   food_id    INTEGER NOT NULL REFERENCES foods(id) ON DELETE CASCADE,
@@ -30,7 +48,10 @@ CREATE TABLE IF NOT EXISTS rules (
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
--- align inferences with your DB (uses uploaded_at)
+-- =========================================================
+-- inferences
+--  - stores model outputs for auditing / analytics
+-- =========================================================
 CREATE TABLE IF NOT EXISTS inferences (
   id            SERIAL PRIMARY KEY,
   uploaded_at   TIMESTAMPTZ DEFAULT now(),
@@ -41,7 +62,24 @@ CREATE TABLE IF NOT EXISTS inferences (
   user_feedback JSONB
 );
 
--- updated_at helper (unchanged)
+-- =========================================================
+-- barcode_items
+--  - maps barcodes to ingredient text so we can reuse the same
+--    ingredients resolver as the text flow
+-- =========================================================
+CREATE TABLE IF NOT EXISTS barcode_items (
+  barcode          TEXT PRIMARY KEY,
+  display_name     TEXT NOT NULL,
+  ingredients_text TEXT,
+  brand            TEXT,
+  created_at       TIMESTAMPTZ DEFAULT now(),
+  updated_at       TIMESTAMPTZ DEFAULT now()
+);
+
+-- =========================================================
+-- updated_at helper + triggers
+-- =========================================================
+
 CREATE OR REPLACE FUNCTION set_updated_at()
 RETURNS trigger AS $$
 BEGIN
@@ -50,18 +88,30 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- triggers for all tables that have updated_at
+-- foods.updated_at
 DROP TRIGGER IF EXISTS trg_foods_updated_at ON foods;
 CREATE TRIGGER trg_foods_updated_at
 BEFORE UPDATE ON foods
-FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
 
+-- synonyms.updated_at
 DROP TRIGGER IF EXISTS trg_synonyms_updated_at ON synonyms;
 CREATE TRIGGER trg_synonyms_updated_at
 BEFORE UPDATE ON synonyms
-FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
 
+-- rules.updated_at
 DROP TRIGGER IF EXISTS trg_rules_updated_at ON rules;
 CREATE TRIGGER trg_rules_updated_at
 BEFORE UPDATE ON rules
-FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
+
+-- barcode_items.updated_at
+DROP TRIGGER IF EXISTS trg_barcode_items_updated_at ON barcode_items;
+CREATE TRIGGER trg_barcode_items_updated_at
+BEFORE UPDATE ON barcode_items
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
