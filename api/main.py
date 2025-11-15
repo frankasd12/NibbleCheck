@@ -2,14 +2,13 @@
 import os
 import re
 from contextlib import contextmanager
-from typing import Any, Dict, List, Optional  # <-- add Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 import psycopg
 from dotenv import load_dotenv
-import requests  # <-- add this
-
+import requests
 
 load_dotenv()
 
@@ -176,14 +175,16 @@ def _resolve_tokens_against_db(tokens: List[str]) -> List[Dict[str, Any]]:
             )
             row = cur.fetchone()
             if row and row[4] >= SIMILARITY_FLOOR:  # Use similarity threshold
-                hits.append({
-                    "token": t,
-                    "food_id": row[0],
-                    "name": row[1],
-                    "status": row[2],
-                    "matched_from": "synonym",
-                    "db_score": row[4],
-                })
+                hits.append(
+                    {
+                        "token": t,
+                        "food_id": row[0],
+                        "name": row[1],
+                        "status": row[2],
+                        "matched_from": "synonym",
+                        "db_score": row[4],
+                    }
+                )
                 continue
 
             # --- 2) Fall back to fuzzy canonical_name ---
@@ -202,14 +203,16 @@ def _resolve_tokens_against_db(tokens: List[str]) -> List[Dict[str, Any]]:
             )
             row = cur.fetchone()
             if row and row[3] >= SIMILARITY_FLOOR:
-                hits.append({
-                    "token": t,
-                    "food_id": row[0],
-                    "name": row[1],
-                    "status": row[2],
-                    "matched_from": "food",
-                    "db_score": row[3],
-                })
+                hits.append(
+                    {
+                        "token": t,
+                        "food_id": row[0],
+                        "name": row[1],
+                        "status": row[2],
+                        "matched_from": "food",
+                        "db_score": row[3],
+                    }
+                )
 
         # --- Attach notes + sources ---
         if hits:
@@ -241,7 +244,7 @@ def _resolve_tokens_against_db(tokens: List[str]) -> List[Dict[str, Any]]:
 
 
 # -------------------------------------------------
-# Simple search / details endpoints (unchanged APIs)
+# Simple search / details endpoints
 # -------------------------------------------------
 
 
@@ -436,8 +439,9 @@ def ingredients_resolve(payload: Dict[str, Any]):
 
 
 # -------------------------------------------------
-# Barcode → look up ingredients → hits
+# Barcode → OpenFoodFacts → ingredients → hits
 # -------------------------------------------------
+
 OPENFOODFACTS_PRODUCT_URL = os.getenv(
     "OPENFOODFACTS_PRODUCT_URL",
     "https://world.openfoodfacts.org/api/v0/product/{barcode}.json",
@@ -448,7 +452,7 @@ def _fetch_openfoodfacts_product(barcode: str) -> Optional[Dict[str, Any]]:
     """
     Look up a product in OpenFoodFacts by barcode.
 
-    Returns a dict with keys: name, brand, ingredients_text
+    Returns a dict with keys: name, ingredients_text
     or None if the product cannot be found / parsed.
     """
     try:
@@ -460,9 +464,7 @@ def _fetch_openfoodfacts_product(barcode: str) -> Optional[Dict[str, Any]]:
         print("WARN: OpenFoodFacts lookup failed:", exc)
         return None
 
-    if not isinstance(data, dict):
-        return None
-    if data.get("status") != 1:
+    if not isinstance(data, dict) or data.get("status") != 1:
         # 0 = product not found in OFF
         return None
 
@@ -470,13 +472,12 @@ def _fetch_openfoodfacts_product(barcode: str) -> Optional[Dict[str, Any]]:
     if not isinstance(product, dict):
         return None
 
-    # Name / brand
+    # Product name
     name = (
         product.get("product_name")
         or product.get("generic_name")
         or "Scanned product"
     )
-    brand = product.get("brands") or ""
 
     # Ingredients text: prefer English, then generic, then build from list
     ingredients_text = ""
@@ -489,7 +490,7 @@ def _fetch_openfoodfacts_product(barcode: str) -> Optional[Dict[str, Any]]:
     if not ingredients_text:
         ing_list = product.get("ingredients")
         if isinstance(ing_list, list):
-            parts = []
+            parts: List[str] = []
             for ing in ing_list:
                 if isinstance(ing, dict):
                     txt = ing.get("text")
@@ -500,7 +501,6 @@ def _fetch_openfoodfacts_product(barcode: str) -> Optional[Dict[str, Any]]:
 
     return {
         "name": str(name).strip() or "Scanned product",
-        "brand": str(brand).strip() if isinstance(brand, str) else "",
         "ingredients_text": ingredients_text.strip(),
     }
 
@@ -512,9 +512,8 @@ def barcode_resolve(payload: Dict[str, Any]):
 
     Flow:
     - Require a barcode.
-    - If ingredients_text is provided, use it directly.
-    - Else, try local barcode_items cache.
-    - Else, call OpenFoodFacts to fetch product + ingredients.
+    - If ingredients_text is provided in payload, use it (handy for debugging).
+    - Otherwise, call OpenFoodFacts to fetch product + ingredients.
     - If still nothing, return an "error" payload that the mobile app shows nicely.
     - Once we have ingredients_text, tokenize and match against foods+synonyms.
     """
@@ -526,38 +525,11 @@ def barcode_resolve(payload: Dict[str, Any]):
     ingredients_text = str(payload.get("ingredients_text") or "").strip()
     display_name = str(payload.get("display_name") or "").strip()
 
-    cached_brand: str = ""
-
-    # 1) Try local cache first if ingredients_text not provided
+    # 1) If no ingredients passed in, try OpenFoodFacts
     if not ingredients_text:
-        try:
-            with db() as conn, conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT display_name, ingredients_text, brand
-                    FROM barcode_items
-                    WHERE barcode = %s;
-                    """,
-                    (code,),
-                )
-                row = cur.fetchone()
-            if row:
-                if not display_name and row[0]:
-                    display_name = row[0]
-                if row[1]:
-                    ingredients_text = row[1]
-                if row[2]:
-                    cached_brand = row[2]
-        except Exception as exc:
-            # Cache failures shouldn't kill the request; just log and continue.
-            print("WARN: barcode_items lookup failed:", exc)
+        product = _fetch_openfoodfacts_product(code)
 
-    # 2) If still no ingredients, call OpenFoodFacts
-    off_product: Optional[Dict[str, Any]] = None
-    if not ingredients_text:
-        off_product = _fetch_openfoodfacts_product(code)
-
-        if not off_product:
+        if not product:
             # Let the client show a friendly "not found" bubble
             return {
                 "barcode": code,
@@ -568,7 +540,7 @@ def barcode_resolve(payload: Dict[str, Any]):
                 ),
             }
 
-        ingredients_text = off_product.get("ingredients_text", "").strip()
+        ingredients_text = product.get("ingredients_text", "").strip()
         if not ingredients_text:
             return {
                 "barcode": code,
@@ -579,29 +551,8 @@ def barcode_resolve(payload: Dict[str, Any]):
                 ),
             }
 
-        # Prefer product name from OFF if display_name wasn't supplied
         if not display_name:
-            display_name = off_product.get("name") or "Scanned product"
-        if not cached_brand:
-            cached_brand = off_product.get("brand", "")
-
-        # 2b) Save / update in barcode_items for faster future lookups
-        try:
-            with db() as conn, conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO barcode_items (barcode, display_name, ingredients_text, brand)
-                    VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (barcode) DO UPDATE
-                    SET display_name = EXCLUDED.display_name,
-                        ingredients_text = EXCLUDED.ingredients_text,
-                        brand = EXCLUDED.brand;
-                    """,
-                    (code, display_name, ingredients_text, cached_brand),
-                )
-                conn.commit()
-        except Exception as exc:
-            print("WARN: barcode_items upsert failed:", exc)
+            display_name = product.get("name") or "Scanned product"
 
     # Final safety: if somehow still no ingredients, bail gracefully
     if not ingredients_text:
@@ -614,7 +565,7 @@ def barcode_resolve(payload: Dict[str, Any]):
             ),
         }
 
-    # 3) Now we have ingredients: resolve against foods + synonyms
+    # 2) Now we have ingredients: resolve against foods + synonyms
     tokens = _tokenize_ingredients(ingredients_text)
     hits = _resolve_tokens_against_db(tokens)
 
@@ -625,4 +576,3 @@ def barcode_resolve(payload: Dict[str, Any]):
         "hits": hits,
         "overall_status": _pick_overall_status(hits),
     }
-
