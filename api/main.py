@@ -441,26 +441,72 @@ def ingredients_resolve(payload: Dict[str, Any]):
 @app.post("/barcode/resolve")
 def barcode_resolve(payload: Dict[str, Any]):
     """
-    Resolve barcode by accepting raw ingredients text directly.
-    Cross-reference each ingredient against the foods DB (foods + synonyms).
+    Resolve a packaged-food barcode into ingredients and then
+    cross-reference each ingredient against the foods DB (foods + synonyms).
+
+    - If `ingredients_text` is provided in the payload, we use it directly.
+    - Otherwise we look up the barcode in `barcode_items`.
     """
     code = str(payload.get("barcode", "")).strip()
-    ingredients_text = str(payload.get("ingredients_text", "")).strip()
-    display_name = str(payload.get("display_name", "Unknown Product")).strip()
-    
     if not code:
         raise HTTPException(400, "barcode is required")
-    
+
+    # Optional manual override (e.g., from some admin tool)
+    ingredients_text = str(payload.get("ingredients_text") or "").strip()
+    display_name = str(payload.get("display_name") or "").strip()
+
+    # If no ingredients_text was provided, fall back to barcode_items table
     if not ingredients_text:
-        raise HTTPException(400, "ingredients_text is required")
+        with db() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT display_name, ingredients_text
+                FROM barcode_items
+                WHERE barcode = %s;
+                """,
+                (code,),
+            )
+            row = cur.fetchone()
+
+        if not row:
+            # Graceful "not found" response (no stack trace on mobile)
+            return {
+                "barcode": code,
+                "display_name": None,
+                "raw_ingredients": None,
+                "hits": [],
+                "overall_status": "UNKNOWN",
+                "error": "barcode_not_found",
+                "message": (
+                    "This barcode is not in our food database. "
+                    "It may be a non-food item or a product we haven't indexed yet."
+                ),
+            }
+
+        if not display_name:
+            display_name = row[0]
+        ingredients_text = row[1] or ""
+
+    # If we still somehow have no ingredients, bail nicely
+    if not ingredients_text:
+        return {
+            "barcode": code,
+            "display_name": display_name or None,
+            "raw_ingredients": None,
+            "hits": [],
+            "overall_status": "UNKNOWN",
+            "error": "ingredients_missing",
+            "message": "This product has no ingredients listed in the database.",
+        }
 
     tokens = _tokenize_ingredients(ingredients_text)
     hits = _resolve_tokens_against_db(tokens)
 
     return {
         "barcode": code,
-        "display_name": display_name,
+        "display_name": display_name or "Scanned product",
         "raw_ingredients": ingredients_text,
         "hits": hits,
         "overall_status": _pick_overall_status(hits),
     }
+
