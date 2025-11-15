@@ -2,12 +2,14 @@
 import os
 import re
 from contextlib import contextmanager
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional  # <-- add Optional
 
 from fastapi import FastAPI, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 import psycopg
 from dotenv import load_dotenv
+import requests  # <-- add this
+
 
 load_dotenv()
 
@@ -436,46 +438,129 @@ def ingredients_resolve(payload: Dict[str, Any]):
 # -------------------------------------------------
 # Barcode → look up ingredients → hits
 # -------------------------------------------------
+OPENFOODFACTS_PRODUCT_URL = os.getenv(
+    "OPENFOODFACTS_PRODUCT_URL",
+    "https://world.openfoodfacts.org/api/v0/product/{barcode}.json",
+)
+
+
+def _fetch_openfoodfacts_product(barcode: str) -> Optional[Dict[str, Any]]:
+    """
+    Look up a product in OpenFoodFacts by barcode.
+
+    Returns a dict with keys: name, brand, ingredients_text
+    or None if the product cannot be found / parsed.
+    """
+    try:
+        url = OPENFOODFACTS_PRODUCT_URL.format(barcode=barcode)
+        resp = requests.get(url, timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:  # network / JSON / etc.
+        print("WARN: OpenFoodFacts lookup failed:", exc)
+        return None
+
+    if not isinstance(data, dict):
+        return None
+    if data.get("status") != 1:
+        # 0 = product not found in OFF
+        return None
+
+    product = data.get("product") or {}
+    if not isinstance(product, dict):
+        return None
+
+    # Name / brand
+    name = (
+        product.get("product_name")
+        or product.get("generic_name")
+        or "Scanned product"
+    )
+    brand = product.get("brands") or ""
+
+    # Ingredients text: prefer English, then generic, then build from list
+    ingredients_text = ""
+    for key in ("ingredients_text_en", "ingredients_text"):
+        val = product.get(key)
+        if isinstance(val, str) and val.strip():
+            ingredients_text = val.strip()
+            break
+
+    if not ingredients_text:
+        ing_list = product.get("ingredients")
+        if isinstance(ing_list, list):
+            parts = []
+            for ing in ing_list:
+                if isinstance(ing, dict):
+                    txt = ing.get("text")
+                    if isinstance(txt, str) and txt.strip():
+                        parts.append(txt.strip())
+            if parts:
+                ingredients_text = ", ".join(parts)
+
+    return {
+        "name": str(name).strip() or "Scanned product",
+        "brand": str(brand).strip() if isinstance(brand, str) else "",
+        "ingredients_text": ingredients_text.strip(),
+    }
 
 
 @app.post("/barcode/resolve")
 def barcode_resolve(payload: Dict[str, Any]):
     """
-    Resolve a packaged-food barcode into ingredients and then
-    cross-reference each ingredient against the foods DB (foods + synonyms).
+    Resolve a barcode to an overall product rating + ingredient ratings.
 
-    - If `ingredients_text` is provided in the payload, we use it directly.
-    - Otherwise we look up the barcode in `barcode_items`.
+    Flow:
+    - Require a barcode.
+    - If ingredients_text is provided, use it directly.
+    - Else, try local barcode_items cache.
+    - Else, call OpenFoodFacts to fetch product + ingredients.
+    - If still nothing, return an "error" payload that the mobile app shows nicely.
+    - Once we have ingredients_text, tokenize and match against foods+synonyms.
     """
     code = str(payload.get("barcode", "")).strip()
     if not code:
         raise HTTPException(400, "barcode is required")
 
-    # Optional manual override (e.g., from some admin tool)
+    # Optional overrides coming from the client:
     ingredients_text = str(payload.get("ingredients_text") or "").strip()
     display_name = str(payload.get("display_name") or "").strip()
 
-    # If no ingredients_text was provided, fall back to barcode_items table
-    if not ingredients_text:
-        with db() as conn, conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT display_name, ingredients_text
-                FROM barcode_items
-                WHERE barcode = %s;
-                """,
-                (code,),
-            )
-            row = cur.fetchone()
+    cached_brand: str = ""
 
-        if not row:
-            # Graceful "not found" response (no stack trace on mobile)
+    # 1) Try local cache first if ingredients_text not provided
+    if not ingredients_text:
+        try:
+            with db() as conn, conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT display_name, ingredients_text, brand
+                    FROM barcode_items
+                    WHERE barcode = %s;
+                    """,
+                    (code,),
+                )
+                row = cur.fetchone()
+            if row:
+                if not display_name and row[0]:
+                    display_name = row[0]
+                if row[1]:
+                    ingredients_text = row[1]
+                if row[2]:
+                    cached_brand = row[2]
+        except Exception as exc:
+            # Cache failures shouldn't kill the request; just log and continue.
+            print("WARN: barcode_items lookup failed:", exc)
+
+    # 2) If still no ingredients, call OpenFoodFacts
+    off_product: Optional[Dict[str, Any]] = None
+    if not ingredients_text:
+        off_product = _fetch_openfoodfacts_product(code)
+
+        if not off_product:
+            # Let the client show a friendly "not found" bubble
             return {
                 "barcode": code,
-                "display_name": None,
-                "raw_ingredients": None,
-                "hits": [],
-                "overall_status": "UNKNOWN",
                 "error": "barcode_not_found",
                 "message": (
                     "This barcode is not in our food database. "
@@ -483,22 +568,53 @@ def barcode_resolve(payload: Dict[str, Any]):
                 ),
             }
 
-        if not display_name:
-            display_name = row[0]
-        ingredients_text = row[1] or ""
+        ingredients_text = off_product.get("ingredients_text", "").strip()
+        if not ingredients_text:
+            return {
+                "barcode": code,
+                "error": "ingredients_missing",
+                "message": (
+                    "We found this product, but it does not have a readable "
+                    "ingredients list yet."
+                ),
+            }
 
-    # If we still somehow have no ingredients, bail nicely
+        # Prefer product name from OFF if display_name wasn't supplied
+        if not display_name:
+            display_name = off_product.get("name") or "Scanned product"
+        if not cached_brand:
+            cached_brand = off_product.get("brand", "")
+
+        # 2b) Save / update in barcode_items for faster future lookups
+        try:
+            with db() as conn, conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO barcode_items (barcode, display_name, ingredients_text, brand)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (barcode) DO UPDATE
+                    SET display_name = EXCLUDED.display_name,
+                        ingredients_text = EXCLUDED.ingredients_text,
+                        brand = EXCLUDED.brand;
+                    """,
+                    (code, display_name, ingredients_text, cached_brand),
+                )
+                conn.commit()
+        except Exception as exc:
+            print("WARN: barcode_items upsert failed:", exc)
+
+    # Final safety: if somehow still no ingredients, bail gracefully
     if not ingredients_text:
         return {
             "barcode": code,
-            "display_name": display_name or None,
-            "raw_ingredients": None,
-            "hits": [],
-            "overall_status": "UNKNOWN",
             "error": "ingredients_missing",
-            "message": "This product has no ingredients listed in the database.",
+            "message": (
+                "We couldn't find ingredients for this product yet. "
+                "Try typing the ingredient names manually."
+            ),
         }
 
+    # 3) Now we have ingredients: resolve against foods + synonyms
     tokens = _tokenize_ingredients(ingredients_text)
     hits = _resolve_tokens_against_db(tokens)
 
