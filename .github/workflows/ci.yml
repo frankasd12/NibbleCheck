@@ -72,3 +72,37 @@ jobs:
           assert r.json().get("ok") is True, r.text
           PY
 
+      - name: API CV /classify/resolve smoke test
+        run: |
+          python - <<'PY'
+          import io, os
+          from starlette.testclient import TestClient
+          from PIL import Image
+          from api.main import app
+
+          # Make sure DB URL is set (same as above)
+          os.environ.setdefault("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/dogfood")
+
+          client = TestClient(app)
+
+          # Create a simple dummy image in memory
+          img = Image.new("RGB", (64, 64), color=(255, 255, 255))
+          buf = io.BytesIO()
+          img.save(buf, format="PNG")
+          buf.seek(0)
+
+          files = {
+              "file": ("test.png", buf.getvalue(), "image/png"),
+          }
+
+          r = client.post("/classify/resolve", files=files)
+          print("STATUS:", r.status_code)
+          print("BODY:", r.text)
+
+          assert r.status_code == 200, r.text
+          data = r.json()
+          assert isinstance(data, dict), data
+          assert "candidates" in data, data
+          assert isinstance(data["candidates"], list), data
+          # We don't care if it's empty; we just want the pipeline to run without errors
+          PY
